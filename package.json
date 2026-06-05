@@ -1,0 +1,34 @@
+{
+  "name": "base-l2-agent-kit-mcp",
+  "version": "1.0.0",
+  "description": "MCP server providing Base L2 DeFi tools for AI agents. Wallet management, token swaps, liquidity provision, price feeds, contract interaction, and flash loan arbitrage.",
+  "main": "server.py",
+  "scripts": {
+    "start": "python3 server.py"
+  },
+  "mcp": {
+    "name": "Base L2 Agent Kit",
+    "description": "MCP server with 12 tools for Base L2 DeFi operations. Enables agents to manage wallets, swap tokens, provide liquidity, read price feeds, interact with smart contracts, and execute flash loan arbitrage.",
+    "tools": [
+      "get_wallet_balance",
+      "get_transaction_history",
+      "send_transaction",
+      "swap_tokens",
+      "add_liquidity",
+      "remove_liquidity",
+      "get_token_price",
+      "get_gas_price",
+      "call_contract",
+      "send_contract_transaction",
+      "estimate_gas",
+      "execute_flash_loan"
+    ]
+  },
+  "keywords": ["mcp", "base", "l2", "defi", "ethereum", "agent", "wallet", "swap", "liquidity", "flash-loan"],
+  "author": "manteclaw",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manteclaw/base-l2-agent-kit-mcp.git"
+  }
+}
