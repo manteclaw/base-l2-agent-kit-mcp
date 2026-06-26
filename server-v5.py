@@ -31,6 +31,93 @@ RPC_ENDPOINTS = [
 
 app = FastAPI(title="Manteclaw Base L2 Agent Services", version="5.1.1")
 
+import httpx
+import asyncio
+
+# ── Analytics ─────────────────────────────────────────────────────────
+PLAUSIBLE_DOMAIN = os.environ.get("PLAUSIBLE_DOMAIN", "")  # e.g., manteclaw-x402.fly.dev
+PLAUSIBLE_API_URL = os.environ.get("PLAUSIBLE_API_URL", "https://plausible.io/api/event")
+GA4_MEASUREMENT_ID = os.environ.get("GA4_MEASUREMENT_ID", "")  # e.g., G-XXXXXXXXXX
+GA4_API_SECRET = os.environ.get("GA4_API_SECRET", "")
+
+_analytics_queue: List[Dict] = []
+_analytics_lock = threading.Lock()
+
+async def _send_plausible_event(event_name: str, url: str, referrer: str = ""):
+    """Send event to Plausible Analytics."""
+    if not PLAUSIBLE_DOMAIN:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                PLAUSIBLE_API_URL,
+                json={
+                    "name": event_name,
+                    "url": url,
+                    "domain": PLAUSIBLE_DOMAIN,
+                    "referrer": referrer or "",
+                },
+                headers={"User-Agent": "Manteclaw-Analytics/1.0"},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+async def _send_ga4_event(event_name: str, params: Dict):
+    """Send event to GA4 via Measurement Protocol."""
+    if not GA4_MEASUREMENT_ID or not GA4_API_SECRET:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://www.google-analytics.com/mp/collect?measurement_id={GA4_MEASUREMENT_ID}&api_secret={GA4_API_SECRET}",
+                json={
+                    "client_id": "manteclaw-server",
+                    "events": [{"name": event_name, "params": params}],
+                },
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+async def track_request(request: Request, endpoint: str, status_code: int, duration_ms: float):
+    """Track API request to all configured analytics providers."""
+    url = str(request.url)
+    referrer = request.headers.get("referer", "")
+    
+    # Plausible
+    await _send_plausible_event(
+        event_name="pageview" if request.method == "GET" else "api_call",
+        url=url,
+        referrer=referrer,
+    )
+    
+    # GA4
+    await _send_ga4_event(
+        event_name="api_request",
+        params={
+            "endpoint": endpoint,
+            "method": request.method,
+            "status_code": status_code,
+            "duration_ms": round(duration_ms, 2),
+            "path": request.url.path,
+        },
+    )
+
+@app.middleware("http")
+async def analytics_middleware(request: Request, call_next):
+    """Middleware to track all API requests."""
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start) * 1000
+    
+    # Track in background so it doesn't slow down responses
+    asyncio.create_task(
+        track_request(request, request.url.path, response.status_code, duration_ms)
+    )
+    
+    return response
+
 # ── In-memory cache ───────────────────────────────────────────────────
 _cache: Dict[str, Dict[str, Any]] = {}
 CACHE_TTL = 30
