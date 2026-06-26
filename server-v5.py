@@ -7,12 +7,35 @@ import json
 import time
 import hashlib
 import threading
+import ssl
+import socket
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any, List
 import uvicorn
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Sentry Error Tracking ─────────────────────────────────────────────
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
+        environment=os.environ.get("ENVIRONMENT", "production"),
+        release="base-l2-agent-kit@1.0.0",
+    )
+
+# ── Rate Limiting ─────────────────────────────────────────────────────
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
 
 # ── Config ──────────────────────────────────────────────
 WALLET_ADDRESS = os.environ.get("WALLET_ADDRESS", "0x5D2102d22DB8fBa47F656d0bbcBa0995eF4C8d0D")
@@ -30,6 +53,8 @@ RPC_ENDPOINTS = [
 ]
 
 app = FastAPI(title="Manteclaw Base L2 Agent Services", version="5.1.1")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 import httpx
 import asyncio
@@ -266,7 +291,8 @@ def _make_402_response(dataset_id: str) -> JSONResponse:
 # ── Health ────────────────────────────────────────────────────────────
 @app.get("/health")
 @app.head("/health")
-async def health():
+@limiter.limit("60/minute")
+async def health(request: Request):
     w3 = get_working_w3(timeout=2)
     return {
         "status": "ok",
@@ -276,6 +302,42 @@ async def health():
         "rpc_connected": w3 is not None and w3.is_connected(),
         "timestamp": int(time.time()),
     }
+
+# ── SSL Certificate Expiry Check ──────────────────────────────────────
+@app.get("/ssl-check")
+async def ssl_check(hostname: str = "manteclaw-x402.fly.dev"):
+    """Check SSL certificate expiry for a given hostname."""
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, 443), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                cert = ssock.getpeercert()
+                not_after = cert.get("notAfter", "")
+                not_before = cert.get("notBefore", "")
+                issuer = cert.get("issuer", ())
+                subject = cert.get("subject", ())
+                
+                # Parse expiry date
+                expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+                now = datetime.utcnow()
+                days_until_expiry = (expiry - now).days
+                
+                status = "ok" if days_until_expiry > 14 else "warning" if days_until_expiry > 7 else "critical"
+                
+                return {
+                    "hostname": hostname,
+                    "status": status,
+                    "days_until_expiry": days_until_expiry,
+                    "expiry_date": expiry.isoformat(),
+                    "issued_date": datetime.strptime(not_before, "%b %d %H:%M:%S %Y %Z").isoformat() if not_before else None,
+                    "issuer": dict(x[0] for x in issuer) if issuer else {},
+                    "subject": dict(x[0] for x in subject) if subject else {},
+                }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"hostname": hostname, "status": "error", "message": str(e)}
+        )
 
 # ── Dataset Marketplace ───────────────────────────────────────────────
 def scan_datasets() -> Dict[str, Dict]:
@@ -309,7 +371,8 @@ def scan_datasets() -> Dict[str, Dict]:
     return datasets
 
 @app.get("/datasets")
-async def datasets_landing():
+@limiter.limit("30/minute")
+async def datasets_landing(request: Request):
     catalog = scan_datasets()
     items = []
     for ds_id, info in sorted(catalog.items(), key=lambda x: x[1]["generated_at"], reverse=True):
@@ -538,7 +601,8 @@ async def skyfire_seller_webhook(request: Request):
 
 # ── x402 Config ────────────────────────────────────────────────────────
 @app.get("/x402/config")
-async def x402_config():
+@limiter.limit("30/minute")
+async def x402_config(request: Request):
     return {
         "version": "2",
         "payment_protocol": "x402",
@@ -563,6 +627,7 @@ async def x402_config():
     }
 
 @app.post("/x402/verify")
+@limiter.limit("20/minute")
 async def x402_verify(request: Request):
     try:
         body = await request.json()

@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn web3 python-dotenv httpx
+RUN pip install --no-cache-dir fastapi uvicorn web3 python-dotenv httpx sentry-sdk slowapi
 
 COPY server-v5.py .
 
